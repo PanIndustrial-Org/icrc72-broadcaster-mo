@@ -1,0 +1,19 @@
+dev-dependencies = { }
+
+[dependencies]
+base = "0.11.1"
+stableheapbtreemap = "1.5.0"
+star = "0.1.1"
+map = "9.0.1"
+vector = "0.3.1"
+candy = "0.3.0"
+icrc1-mo = "0.0.15"
+ovs-fixed = "0.1.1"
+candy-utils = "0.7.0"
+
+[package]
+name = "icrc72-broadcaster-mo"
+version = "0.0.1"
+description = "manage broadcaster for icrc72"
+repository = "https://github.com/PanIndustrial-Org/icrc72-broadcaster-mo"
+keywords = [ "pubsub" ]
