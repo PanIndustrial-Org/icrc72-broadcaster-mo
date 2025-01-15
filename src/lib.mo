@@ -1,5 +1,5 @@
 import MigrationTypes "migrations/types";
-import Migration "migrations";
+import MigrationLib "migrations";
 import Service "service";
 import BTree "mo:stableheapbtreemap/BTree";
 import Map "mo:map/Map";
@@ -21,10 +21,11 @@ import Conversion = "mo:candy/conversion";
 import Candy = "mo:candy/types";
 import Utils = "utils";
 import Result = "mo:base/Result";
+import ClassPlusLib "../../../../ICDevs/projects/ClassPlus/src/";
 
 module {
 
-  
+  public let Migration = MigrationLib;
 
   public type State = MigrationTypes.State;
 
@@ -40,11 +41,20 @@ module {
   public type Namespace = MigrationTypes.Current.Namespace;
   public type Event = MigrationTypes.Current.Event;
   public type EventRecord = MigrationTypes.Current.EventRecord;
+  public type EventRecordShared = MigrationTypes.Current.EventRecordShared;
+  public let eventRecordToShared = MigrationTypes.Current.eventRecordToShared;
   public type EventNotificationRecord = MigrationTypes.Current.EventNotificationRecord;
+  public type EventNotificationRecordShared = MigrationTypes.Current.EventNotificationRecordShared;
+  public let eventNotificationRecordToShared = MigrationTypes.Current.eventNotificationRecordToShared;
   public type EventNotification = MigrationTypes.Current.EventNotification;
   public type PublicationRecord = MigrationTypes.Current.PublicationRecord;
+  public type PublicationRecordShared = MigrationTypes.Current.PublicationRecordShared;
+  public let publicationRecordToShared = MigrationTypes.Current.publicationRecordToShared;
   public type SubscriberRecord = MigrationTypes.Current.SubscriberRecord;
   public type SubscriptionRecord = MigrationTypes.Current.SubscriptionRecord;
+  public type SubscriptionRecordShared = MigrationTypes.Current.SubscriptionRecordShared;
+  public let subscriptionRecordToShared = MigrationTypes.Current.subscriptionRecordToShared;
+  public type Stats = MigrationTypes.Current.Stats;
   public type InitArgs = MigrationTypes.Current.InitArgs;
 
   public type PublicationInfo = ICRC72OrchestratorService.PublicationInfo;
@@ -77,7 +87,44 @@ module {
 
   type ConfigMap  = Map.Map<Text, ICRC16>;
 
-  public class Broadcaster(stored: ?State, canister: Principal, environment: Environment){
+  public type ClassPlus = ClassPlusLib.ClassPlus<
+    Broadcaster, 
+    State,
+    InitArgs,
+    Environment>;
+
+  public func ClassPlusGetter(item: ?ClassPlus) : () -> Broadcaster {
+    ClassPlusLib.ClassPlusGetter<Broadcaster, State, InitArgs, Environment>(item);
+  };
+
+  public func Init<system>(config : {
+      manager: ClassPlusLib.ClassPlusInitializationManager;
+      initialState: State;
+      args : ?InitArgs;
+      pullEnvironment : ?(() -> Environment);
+      onInitialize: ?(Broadcaster -> async*());
+      onStorageChange : ((State) ->())
+    }) :()-> Broadcaster{
+
+      D.print("Broadcaster Init");
+      switch(config.pullEnvironment){
+        case(?val) {
+          D.print("pull environment has value");
+         
+        };
+        case(null) {
+          D.print("pull environment is null");
+        };
+      };  
+      ClassPlusLib.ClassPlus<system,
+        Broadcaster, 
+        State,
+        InitArgs,
+        Environment>({config with constructor = Broadcaster}).get;
+    };
+
+
+  public class Broadcaster(stored: ?State, caller: Principal, canister: Principal, args: ?InitArgs, environment_passed: ?Environment, storageChanged: (State) -> ()){
 
     public let debug_channel = {
       var publish = true;
@@ -86,10 +133,19 @@ module {
       var setup = true;
     };
 
+    public let environment = switch(environment_passed){
+      case(?val) val;
+      case(null) {
+        D.trap("Environment is required");
+      };
+    };
+
     public var maxMessages = switch(environment.maxMessages){
       case(null) 100;
       case(?val) val;
     };
+
+
 
     public var orchestrator : ICRC72OrchestratorService.Service = actor(Principal.toText(environment.icrc72OrchestratorCanister));
 
@@ -104,7 +160,7 @@ module {
         };
       };
 
-    
+    storageChanged(#v0_1_0(#data(state)));
 
     private func natNow(): Nat{Int.abs(Time.now())};
 
@@ -133,8 +189,6 @@ module {
 
     type Listener<T> = (Text, T);
 
-    //private let publicationRegisteredListeners = Vector.Vector<(Text, PublicationRegisteredListener)>();
-
    
     /// Generic function to register a listener.
       ///
@@ -159,17 +213,6 @@ module {
         };
       };
 
-    /// `registerPublicationRegisteredListener`
-    ///
-    /// Registers a new listener or updates an existing one in the provided `listeners` vector.
-    ///
-    /// Parameters:
-    /// - `namespace`: A unique namespace used to identify the listener.
-    /// - `remote_func`: The listener's callback function.
-    /// - `listeners`: The vector of existing listeners that the new listener will be added to or updated in.
-    //public func registerPublicationRegisteredListener(namespace: Text, remote_func : PublicationRegisteredListener){
-    //  registerListener<PublicationRegisteredListener>(namespace, remote_func, publicationRegisteredListeners);
-    //};
 
     public func icrc72_confirm_notifications<system>(caller : Principal, items : [Nat]) : async* ConfirmMessageResult {
 
@@ -200,7 +243,7 @@ module {
         switch(environment.handleConfirmation){
           case(null){
             //todo, move this to a default handler?
-            //nothing is going to happe....so do we delete by default
+            //nothing is going to happen....so do we delete by default
             ignore BTree.delete(state.notificationStore, Nat.compare, thisNotification);
             Set.delete(event.notificationQueue, Set.nhash, thisNotification);
 
@@ -238,10 +281,20 @@ module {
 
     };
 
+    //todo: need a reverse index for cleaning up stake index and updating stake
     private func fileSubscriberInPublication(subscription: SubscriptionRecord, subscriber: SubscriberRecord, publication: PublicationRecord) : () {
       debug if(debug_channel.publish) D.print("               BROADCASTER: File Subscriber in Publication " # debug_show((subscriber, subscription, publication)));
 
-      ignore BTree.insert(publication.stakeIndex, Nat.compare, subscription.stake, subscriber.subscriber);
+      let foundTree = switch(BTree.get(publication.stakeIndex, Nat.compare, subscription.stake)){
+        case(?val) val;
+        case(null){
+          let newTree = BTree.init<Nat, Principal>(null);
+          ignore BTree.insert(publication.stakeIndex, Nat.compare, subscription.stake, newTree);
+          newTree;
+        };
+      };
+
+      ignore BTree.insert(foundTree, Nat.compare, natNow(), subscriber.subscriber);
       ignore BTree.insert(publication.registeredSubscribers, Principal.compare, subscriber.subscriber, subscriber); 
     };
 
@@ -258,6 +311,7 @@ module {
       let roundDelay = (switch(environment.roundDelay){ case(null)(THREE_SECONDS); case(?val)(val)});
 
       //let results = Array.tabulate(messages.size(), func<system>(i : Nat): ?PublishResult {
+      var nonceDelay = 0;
 
       label proc for(thisItem in messages.vals()){
 
@@ -416,108 +470,113 @@ module {
           };
         };
 
-          debug if(debug_channel.publish) D.print("               BROADCASTER: icrc72_publish normal publish detected made it past sys " # debug_show(thisItem));
+        debug if(debug_channel.publish) D.print("               BROADCASTER: icrc72_publish normal publish detected made it past sys " # debug_show(thisItem));
 
-          let publication = switch(getPublicationByNamespace(thisItem.namespace)){
-            case(#ok(val)) val;
-            case(#err(err)){
-              debug if(debug_channel.publish) D.print("               BROADCASTER: No publication found icrc72_publish " # err # " " # debug_show(thisItem));
-              Vector.add(results, ?#Err(#PublicationNotFound));
+        let publication = switch(getPublicationByNamespace(thisItem.namespace)){
+          case(#ok(val)) val;
+          case(#err(err)){
+            debug if(debug_channel.publish) D.print("               BROADCASTER: No publication found icrc72_publish " # err # " " # debug_show(thisItem));
+            Vector.add(results, ?#Err(#PublicationNotFound));
+            continue proc;
+          };
+        };
+
+        debug if(debug_channel.publish) D.print("               BROADCASTER: publication found " # debug_show(publication));
+
+        let originalHeaders = let headerMap = switch(thisItem.headers){
+          case(null) Map.new<Text, ICRC16>();
+          case(?val) Map.fromIter<Text, ICRC16>(val.vals(), Map.thash);
+        };
+
+        let newHeaders = switch(thisItem.headers){
+          case(null) Map.new<Text, ICRC16>();
+          case(?val) Map.fromIter<Text, ICRC16>(val.vals(), Map.thash);
+        };
+
+        debug if(debug_channel.publish) D.print("               BROADCASTER: headers " # debug_show((originalHeaders, newHeaders))); 
+        
+
+        //validate the publisher
+
+        
+        debug if(debug_channel.publish) D.print("               BROADCASTER: publisher " # debug_show(caller) # " " # debug_show(publication.registeredPublishers)); 
+        if(Set.has(publication.registeredPublishers, Set.phash, caller) == false 
+        //and false == true
+        ) {
+          debug if(debug_channel.publish) D.print("               BROADCASTER: publisher " # debug_show(caller) # " not allowed for " # debug_show(thisItem));
+
+          //test for relay
+          switch(BTree.get(publication.registeredRelay, Principal.compare, caller)){
+            case(null){
+              debug if(debug_channel.publish) D.print("               BROADCASTER: publisher " # debug_show(caller) # " not allowed for " # debug_show(thisItem));
+              Vector.add(results, ?#Err(#Unauthorized));
               continue proc;
             };
-          };
-
-          debug if(debug_channel.publish) D.print("               BROADCASTER: publication found " # debug_show(publication));
-
-          let originalHeaders = let headerMap = switch(thisItem.headers){
-            case(null) Map.new<Text, ICRC16>();
-            case(?val) Map.fromIter<Text, ICRC16>(val.vals(), Map.thash);
-          };
-
-          let newHeaders = switch(thisItem.headers){
-            case(null) Map.new<Text, ICRC16>();
-            case(?val) Map.fromIter<Text, ICRC16>(val.vals(), Map.thash);
-          };
-
-          debug if(debug_channel.publish) D.print("               BROADCASTER: headers " # debug_show((originalHeaders, newHeaders))); 
-          
-
-          //validate the publisher
-
-          //todo: what do we do if the item is sys item
-          debug if(debug_channel.publish) D.print("               BROADCASTER: publisher " # debug_show(caller) # " " # debug_show(publication.registeredPublishers)); 
-          if(Set.has(publication.registeredPublishers, Set.phash, caller) == false 
-          //and false == true
-          ) {
-            debug if(debug_channel.publish) D.print("               BROADCASTER: publisher " # debug_show(caller) # " not allowed for " # debug_show(thisItem));
-
-            //test for relay
-            switch(BTree.get(publication.registeredRelay, Principal.compare, caller)){
-              case(null){
-                debug if(debug_channel.publish) D.print("               BROADCASTER: publisher " # debug_show(caller) # " not allowed for " # debug_show(thisItem));
-                Vector.add(results, ?#Err(#Unauthorized));
-                continue proc;
-              };
-              case(?val){
-              //add the header
-                switch(Map.get(originalHeaders, Map.thash, "relay")){
-                  case(?val){
-                    debug if(debug_channel.publish) D.print("               BROADCASTER: double relay from " # debug_show(caller) # " relay val " # debug_show(thisItem));
-                    Vector.add(results, ?#Err(#Unauthorized));
-                    continue proc;
-                  };
-                  case(null){
-                    debug if(debug_channel.publish) D.print("               BROADCASTER: relay from " # debug_show(caller) # " relay null " # debug_show(thisItem));
-                    //add the header
-                    ignore Map.add(newHeaders, Map.thash, "broadcaster", #Blob(Principal.toBlob(canister)));
-                  };
+            case(?val){
+            //add the header
+              switch(Map.get(originalHeaders, Map.thash, "relay")){
+                case(?val){
+                  debug if(debug_channel.publish) D.print("               BROADCASTER: double relay from " # debug_show(caller) # " relay val " # debug_show(thisItem));
+                  Vector.add(results, ?#Err(#Unauthorized));
+                  continue proc;
+                };
+                case(null){
+                  debug if(debug_channel.publish) D.print("               BROADCASTER: relay from " # debug_show(caller) # " relay null " # debug_show(thisItem));
+                  //add the header
+                  ignore Map.add(newHeaders, Map.thash, "broadcaster", #Blob(Principal.toBlob(canister)));
                 };
               };
             };
-            
-            
-            //return ?#Err(#Unauthorized);
-          } else {
-            //make sure there is not already a broadcast header
-            switch(Map.get(originalHeaders, Map.thash, "broadcaster")){
-              case(?val){
-                debug if(debug_channel.publish) D.print("               BROADCASTER: double broadcaster " # debug_show(caller) # " not allowed for " # debug_show(thisItem));
-                Vector.add(results, ?#Err(#Unauthorized));
-                continue proc;
-              };
-              case(null){
-                //add the header
-                ignore Map.add(newHeaders, Map.thash, "broadcaster", #Blob(Principal.toBlob(canister)));
-              };
-            }
-            //add the header
           };
-
-          //validate the 
-
           
-
-          //store the Event
-          let eventRecord : EventRecord = {
-            event = thisItem;
-            notificationQueue = Set.new<Nat>();
-            relayQueue = Set.new<Principal>();
-            var notifications : [Nat] = [];
-          };
-      
-
-          debug if(debug_channel.publish) D.print("               BROADCASTER: eventRecord " # debug_show(eventRecord, thisItem.id, ));
-
-          let eventCol = switch(BTree.get(state.eventStore, Text.compare, thisItem.namespace)){
-            case(?val)val;
-            case(null){
-              let newEventStore = BTree.init<Nat, EventRecord>(null);
-              ignore BTree.insert(state.eventStore, Text.compare, thisItem.namespace, newEventStore);
-              newEventStore;
+          
+          //return ?#Err(#Unauthorized);
+        } else {
+          //make sure there is not already a broadcast header
+          switch(Map.get(originalHeaders, Map.thash, "broadcaster")){
+            case(?val){
+              debug if(debug_channel.publish) D.print("               BROADCASTER: double broadcaster " # debug_show(caller) # " not allowed for " # debug_show(thisItem));
+              Vector.add(results, ?#Err(#Unauthorized));
+              continue proc;
             };
-          };
+            case(null){
+              //add the header
+              ignore Map.add(newHeaders, Map.thash, "broadcaster", #Blob(Principal.toBlob(canister)));
+            };
+          }
+          //add the header
+        };
 
-          ignore BTree.insert(eventCol, Nat.compare, thisItem.id, eventRecord);
+        //validate the 
+
+        
+
+        //store the Event
+        let eventRecord : EventRecord = {
+          event = thisItem;
+          notificationQueue = Set.new<Nat>();
+          relayQueue = Set.new<Principal>();
+          var notifications : [Nat] = [];
+        };
+    
+
+        debug if(debug_channel.publish) D.print("               BROADCASTER: eventRecord " # debug_show(eventRecord, thisItem.id, ));
+
+        let eventCol = switch(BTree.get(state.eventStore, Text.compare, thisItem.namespace)){
+          case(?val)val;
+          case(null){
+            let newEventStore = BTree.init<Nat, EventRecord>(null);
+            ignore BTree.insert(state.eventStore, Text.compare, thisItem.namespace, newEventStore);
+            newEventStore;
+          };
+        };
+
+        ignore BTree.insert(eventCol, Nat.compare, thisItem.id, eventRecord);
+        debug if(debug_channel.publish) D.print("               BROADCASTER: publicationIndex " # debug_show(BTree.toArray(publication.stakeIndex)));
+     
+
+        if(BTree.size(publication.stakeIndex) > 0){
+          
 
           //get the proper order
           let ?max = BTree.max(publication.stakeIndex) else {
@@ -527,9 +586,19 @@ module {
             //return ?#Ok([]); //todo: change to no subscribers
           };
 
-          let subscribers = BTree.scanLimit(publication.stakeIndex, Nat.compare, max.0, 0, #bwd, BTree.size(publication.stakeIndex));
+          //current order is stake then registration time
 
-          debug if(debug_channel.publish) D.print("               BROADCASTER: subscribers " # debug_show(subscribers));
+          let subscribersStakes = BTree.scanLimit(publication.stakeIndex, Nat.compare, max.0, 0, #bwd, BTree.size(publication.stakeIndex));
+
+          let subscribers = Buffer.Buffer<(Nat, Principal)>(1);
+
+          for(thisGroup in subscribersStakes.results.vals()){
+            for(thisItem in BTree.entries(thisGroup.1)){
+              subscribers.add(thisGroup.0, thisItem.1);
+            };
+          };
+
+          debug if(debug_channel.publish) D.print("               BROADCASTER: subscribers " # debug_show((Buffer.toArray(subscribers), subscribers.size())));
 
           //enque the items
           var delay = 0;
@@ -537,7 +606,7 @@ module {
           var numberProcessed = 0;
           let now = natNow();
 
-          label enque for(thisNotification : (Nat, Principal) in subscribers.results.vals()){
+          label enque for(thisNotification : (Nat, Principal) in subscribers.vals()){
 
             debug if(debug_channel.publish) D.print("               BROADCASTER: enque " # debug_show(thisNotification));
 
@@ -566,7 +635,7 @@ module {
             let nextNotificationId = state.nextNotificationId;
                 
 
-            debug if(debug_channel.publish) D.print("               BROADCASTER: enque " # debug_show((nextNotificationId, numberProcessed, Principal.toBlob(canister), eventRecord, subscribers.results, thisNotification)));
+            debug if(debug_channel.publish) D.print("               BROADCASTER: enqueue " # debug_show((nextNotificationId, numberProcessed, Principal.toBlob(canister), eventRecord, Buffer.toArray(subscribers), thisNotification)));
 
               //schedule the execution
             let notificaitionRecord : EventNotificationRecord = {
@@ -589,6 +658,7 @@ module {
                   actionType = CONST.broadcasters.timer.sendMessage;
                   params = to_candid(nextNotificationId);
                 }, FIVE_MINUTES);
+                nonceDelay := nonceDelay + 1;
                 ?result.id;
               };
             };
@@ -616,60 +686,66 @@ module {
           };
 
           Vector.add(results, ?#Ok(thisResult));
+        };
 
-          //handle relays
+        //handle relays
+        //todo: extend stake to relays
+        debug if(debug_channel.publish) D.print("               BROADCASTER: handling relays " # debug_show(eventRecord));
 
-          debug if(debug_channel.publish) D.print("               BROADCASTER: handling relays " # debug_show(eventRecord));
+        label relay for(thisRelay in BTree.entries(publication.registeredRelay)){
 
-          label relay for(thisRelay in BTree.entries(publication.registeredRelay)){
+          let now = natNow();
 
-            debug if(debug_channel.publish) D.print("               BROADCASTER: handling relay item " # debug_show(thisRelay)); 
+          debug if(debug_channel.publish) D.print("               BROADCASTER: handling relay item " # debug_show(thisRelay)); 
 
-            let filter = switch(thisRelay.1){
-              case(null) null;
-              case(?val){
-                var bFound = false;
-                label filter for(thisFilter in Set.keys(val)){
-                  let filterResult = switch(environment.subscriptionFilter){
-                    case(?filterFunction) filterFunction(state, environment, thisFilter, eventRecord);
-                    case(null) Utils.defaultFilter(state, environment, thisFilter, eventRecord);
-                  };
-                  if(filterResult == true){
-                    bFound := true; //only need to find one match to need to relay
-                    break relay;
-                  };
+          let filter = switch(thisRelay.1){
+            case(null) null;
+            case(?val){
+              var bFound = false;
+              label filter for(thisFilter in Set.keys(val)){
+                let filterResult = switch(environment.subscriptionFilter){
+                  case(?filterFunction) filterFunction(state, environment, thisFilter, eventRecord);
+                  case(null) Utils.defaultFilter(state, environment, thisFilter, eventRecord);
                 };
-                if(bFound == false){
-                  continue relay;
+                if(filterResult == true){
+                  bFound := true; //only need to find one match to need to relay
+                  break relay;
                 };
-                
-                ?val;
               };
-            };
-          
-            Set.add(eventRecord.relayQueue, Set.phash, thisRelay.0);
-            let accumulator = switch(BTree.get(state.relayAccumulator, Principal.compare, thisRelay.0)){
-              case(null){
-                let newAccumulator = Vector.new<Event>();
-                ignore BTree.insert(state.relayAccumulator, Principal.compare, thisRelay.0, newAccumulator);
-                newAccumulator;
+              if(bFound == false){
+                continue relay;
               };
-              case(?val) val;
-            };
-
-            Vector.add(accumulator, thisItem);
-            
-            if(state.relayTimer == null){
-              let result = environment.tt.setActionSync<system>(now, {
-                actionType = CONST.broadcasters.timer.drainRelay;
-                params = to_candid([]);
-              });
-              state.relayTimer := ?result.id;
+              
+              ?val;
             };
           };
+        
+          Set.add(eventRecord.relayQueue, Set.phash, thisRelay.0);
+          let accumulator = switch(BTree.get(state.relayAccumulator, Principal.compare, thisRelay.0)){
+            case(null){
+              let newAccumulator = BTree.init<Nat,Event>(null);
+              ignore BTree.insert(state.relayAccumulator, Principal.compare, thisRelay.0, newAccumulator);
+              newAccumulator;
+            };
+            case(?val) val;
+          };
 
-          continue proc;
-          //return ?#Ok(thisResult);
+          
+          ignore BTree.insert(accumulator, Nat.compare, thisItem.id, thisItem);
+          
+          if(state.relayTimer == null){
+            let result = environment.tt.setActionSync<system>(now, {
+              actionType = CONST.broadcasters.timer.drainRelay;
+              params = to_candid([]);
+            });
+            state.relayTimer := ?result.id;
+          };
+        };
+
+        
+
+        continue proc;
+        //return ?#Ok(thisResult);
       };
 
       debug if(debug_channel.publish) D.print("               BROADCASTER: Publish Done " # debug_show(results));
@@ -756,14 +832,15 @@ module {
 
       let accumulator = switch(BTree.get(state.messageAccumulator, Principal.compare, notificationRecord.destination)){
         case(null){
-          let newAccumulator = Vector.new<EventNotification>();
+          let newAccumulator = BTree.init<Nat,EventNotification>(null);
           ignore BTree.insert(state.messageAccumulator, Principal.compare, notificationRecord.destination, newAccumulator);
           newAccumulator;
         };
         case(?val) val;
       };
 
-      Vector.add(accumulator, {
+      ////todo: we may need to extend the accumulator to handle not just event ids, but also notificatio ids to enforce order
+      ignore BTree.insert(accumulator, Nat.compare, notificationRecord.eventId,{
         id = notificationRecord.id;
         eventId = notificationRecord.eventId;
         prevEventId = eventRecord.event.prevId;
@@ -788,12 +865,50 @@ module {
       return id;
     };
 
-    private func handleDrainRelay<system>(id: TT.ActionId, action: TT.Action) : TT.ActionId{
+    private func handleDrainRelay<system>(id: TT.ActionId, action: TT.Action) : async* Star.Star<TT.ActionId, TT.Error>  {
 
       //no actions, just trigger the batch
       debug if(debug_channel.message) D.print("               BROADCASTER: Handle Drain Relay " # debug_show(action));
 
-      return id;
+      let relayToProc = BTree.toArray(state.relayAccumulator);
+      BTree.clear(state.relayAccumulator);
+      state.relayTimer := null;
+
+      var limiter = 0;
+
+      //handle any relays
+      for(accumulator in relayToProc.vals()){
+        
+        debug if(debug_channel.message) D.print("               BROADCASTER: Handle Message Batch accumulator " # debug_show(accumulator));
+
+        let messages = BTree.toValueArray(accumulator.1);
+        let publisherActor : Service.Service = actor(Principal.toText(accumulator.0));
+        ignore publisherActor.icrc72_publish(messages);
+        limiter := limiter + 1;
+
+
+        label markSent for(thisItem in BTree.toValueArray(accumulator.1).vals()){
+          let ?eventRecord = switch(BTree.get(state.eventStore, Text.compare, thisItem.namespace)){
+            case(?val) BTree.get(val, Nat.compare, thisItem.id);
+            case(null) null;
+          } else {
+            debug if(debug_channel.message) D.print("               BROADCASTER: No event found " # debug_show(thisItem));
+            continue markSent;
+          };
+
+          ignore Set.remove(eventRecord.relayQueue, Set.phash, accumulator.0);
+        };
+
+        //todo: need a better manager for outgoing queue
+        //todo: need to make sure we have enough cycles
+        if(limiter > 400){
+          debug if(debug_channel.message) D.print("               BROADCASTER: Handle Message accumulated relay" # debug_show(id));
+          await localawait();
+          limiter := 0;
+        };
+      };
+
+      return #awaited(id);
     };
 
     //todo:  I feel like I had some elaborate set up here to keep from having to await, but I can't remember what it was. This is naieve and just proceses everything
@@ -812,14 +927,15 @@ module {
 
         debug if(debug_channel.message) D.print("               BROADCASTER: Handle Message Batch accumulator " # debug_show(accumulator));
        
-        let messages = Vector.toArray(accumulator.1);
+        let messages = BTree.toValueArray(accumulator.1);
+        debug if(debug_channel.message) D.print("               BROADCASTER: Handle Message Batch messages " # debug_show(messages));
         let subscriberActor : ICRC72SubscriberService.Service = actor(Principal.toText(accumulator.0));
 
 
         subscriberActor.icrc72_handle_notification(messages);
 
 
-        label markSent for(thisItem in Vector.vals(accumulator.1)){
+        label markSent for(thisItem in BTree.toValueArray(accumulator.1).vals()){
           switch(BTree.get(state.notificationStore, Nat.compare, thisItem.id)) {
             case(?notificationRecord){
               notificationRecord.bSent := ?natNow();
@@ -838,53 +954,24 @@ module {
           ignore Set.remove(eventRecord.notificationQueue, Set.nhash, thisItem.id);
         };
 
+        //todo: need a better manager for outgoing queue
+        //todo: need to make sure we have enough cycles
         limiter := limiter + 1;
-        if(limiter > 8){
+        if(limiter > 400){
           debug if(debug_channel.message) D.print("               BROADCASTER: Handle Message Batch accumulated messages" # debug_show(id));
           await localawait();
           limiter := 0;
         };
       };
 
-      let relayToProc = BTree.toArray(state.relayAccumulator);
-      BTree.clear(state.relayAccumulator);
-
-      //handle any relays
-      for(accumulator in relayToProc.vals()){
-        
-        debug if(debug_channel.message) D.print("               BROADCASTER: Handle Message Batch accumulator " # debug_show(accumulator));
-
-        let messages = Vector.toArray(accumulator.1);
-        let publisherActor : Service.Service = actor(Principal.toText(accumulator.0));
-        ignore publisherActor.icrc72_publish(messages);
-
-
-        label markSent for(thisItem in Vector.vals(accumulator.1)){
-          
-
-          let ?eventRecord = switch(BTree.get(state.eventStore, Text.compare, thisItem.namespace)){
-            case(?val) BTree.get(val, Nat.compare, thisItem.id);
-            case(null) null;
-          } else {
-            debug if(debug_channel.message) D.print("               BROADCASTER: No event found " # debug_show(thisItem));
-            continue markSent;
-          };
-
-          ignore Set.remove(eventRecord.notificationQueue, Set.nhash, thisItem.id);
-        };
-
-        if(limiter > 8){
-          debug if(debug_channel.message) D.print("               BROADCASTER: Handle Message accumulated relay" # debug_show(id));
-          await localawait();
-          limiter := 0;
-        };
-      };
+      
 
       debug if(debug_channel.message) D.print("               BROADCASTER: Handle Message Batch Done " # debug_show(id));
 
       return #awaited(id);
     };
 
+    //todo: need to force a wait
     private func localawait() : async (){};
 
     private func filePublication(publication: PublicationRecord) : () {
@@ -1006,7 +1093,7 @@ module {
         registeredPublishers = Set.new<Principal>();
         registeredSubscribers = BTree.init<Principal, SubscriberRecord>(null);
         registeredRelay = BTree.init<Principal, ?Set.Set<Text>>(null);
-        stakeIndex = BTree.init<Nat, Principal>(null);
+        stakeIndex = BTree.init<Nat, BTree.BTree<Nat,Principal>>(null);
         subnetIndex = Map.new<Principal, Principal>();
       };
       publicationRecord;
@@ -1223,7 +1310,7 @@ module {
               deletePublication(publication);
             };
 
-            //we now need to notify the publisher that we are no longerreceiving messages
+            //we now need to notify the publisher that we are no longer receiving messages
             switch(environment.handleBroadcasterListening){
               case(null){
                 ignore environment.icrc72Publisher.publish<system>([{
@@ -1757,10 +1844,52 @@ module {
       };
     };
 
+    public func stats() : Stats {
+      {
+        tt = environment.tt.getStats();
+        icrc72Subscriber = environment.icrc72Subscriber.stats();
+        icrc72Publisher = environment.icrc72Publisher.stats();
+        roundDelay = environment.roundDelay;
+        maxMessages = environment.maxMessages;
+        icrc72OrchestratorCanister = environment.icrc72OrchestratorCanister;
+        publications = Array.map<(Nat, PublicationRecord),(Nat, PublicationRecordShared)>(BTree.toArray(state.publications), func(entry){
+          (entry.0, publicationRecordToShared(entry.1));
+        });
+        subscriptions = Array.map<(Nat, SubscriptionRecord), (Nat,SubscriptionRecordShared)>(BTree.toArray(state.subscriptions), func(entry){
+          (entry.0, subscriptionRecordToShared(entry.1));
+        });
+        eventStore = Array.map<(Text, BTree.BTree<Nat, EventRecord>),(Text, [(Nat, EventRecordShared)])>(
+          BTree.toArray(state.eventStore),
+          func(entry : (Text, BTree.BTree<Nat, EventRecord>)) {
+            (entry.0, Array.map<(Nat, EventRecord),(Nat,EventRecordShared)>(
+              BTree.toArray(entry.1), func(entry2: (Nat, EventRecord)) {
+                (entry2.0, eventRecordToShared(entry2.1));
+              })
+            );
+          }
+        );
+        notificationStore = Array.map<(Nat, EventNotificationRecord), (Nat, EventNotificationRecordShared)>(BTree.toArray(state.notificationStore), func(entry){
+          (entry.0, eventNotificationRecordToShared(entry.1));
+        });
+        messageAccumulator = Array.map<(Principal, BTree.BTree<Nat, EventNotification>),(Principal, [(Nat, EventNotification)])>(BTree.toArray(state.messageAccumulator),(func(entry) {
+          (entry.0, BTree.toArray(entry.1))
+        }));
+        relayAccumulator = Array.map<(Principal, BTree.BTree<Nat, Event>),(Principal, [(Nat, Event)])>(BTree.toArray(state.relayAccumulator),(func(entry) {
+          (entry.0, BTree.toArray(entry.1))
+        }));
+        relayTimer = state.relayTimer;
+        messageTimer = state.messageTimer;
+        error = state.error;
+        nextNotificationId = state.nextNotificationId;
+      }
+    };
+
 
     private var _isInit : Bool = false;
 
-    public func initBroadcaster() : async() {
+    public func getState(): CurrentState {state};
+
+    public func initializeSubscriptions() : async() {
 
       //can only be called once 
       if(_isInit == true) return;
@@ -1768,15 +1897,13 @@ module {
 
       debug if(debug_channel.setup) D.print("               BROADCASTER: Init Broadcaster");
       try{
-        await environment.icrc72Subscriber.initSubscriber();
-        await environment.icrc72Publisher.initPublisher();
+        await environment.icrc72Subscriber.initializeSubscriptions();
+        await environment.icrc72Publisher.initializeSubscriptions();
       } catch(e){
         _isInit := false;
         state.error := ?"Error initializing subscriber";
         return;
       };
-
-
 
       //register the subscription listener
 
@@ -1794,7 +1921,7 @@ module {
       //todo: we may need our own timer tool in our state so we are sure there are no async items
 
       environment.tt.registerExecutionListenerSync(?CONST.broadcasters.timer.sendMessage, handleTimerMessage);
-      environment.tt.registerExecutionListenerSync(?CONST.broadcasters.timer.drainRelay, handleDrainRelay);
+      environment.tt.registerExecutionListenerAsync(?CONST.broadcasters.timer.drainRelay, handleDrainRelay);
       environment.tt.registerExecutionListenerAsync(?CONST.broadcasters.timer.drainMessage, handleMessageBatch);
     };
 

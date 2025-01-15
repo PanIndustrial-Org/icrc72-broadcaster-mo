@@ -26,8 +26,8 @@ module {
       subscriptionsByNamespace = BTree.init<Text, Map.Map<Principal, Nat>>(null);
       eventStore = BTree.init<Text, BTree.BTree<Nat, v0_1_0.EventRecord>>(null);
       notificationStore = BTree.init<Nat, v0_1_0.EventNotificationRecord>(null); 
-      messageAccumulator = BTree.init<Principal, Vector.Vector<v0_1_0.EventNotification>>(null);
-      relayAccumulator = BTree.init<Principal, Vector.Vector<v0_1_0.Event>>(null);
+      messageAccumulator = BTree.init<Principal, BTree.BTree<Nat, v0_1_0.EventNotification>>(null);
+      relayAccumulator = BTree.init<Principal, BTree.BTree<Nat, v0_1_0.Event>>(null);
       var relayTimer = null;
       var messageTimer = null;
       var nextNotificationId = 0;

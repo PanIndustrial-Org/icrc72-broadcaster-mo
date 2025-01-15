@@ -1,3 +1,4 @@
+import Array "mo:base/Array";
 import Time "mo:base/Time";
 import Principal "mo:base/Principal";
 import Buffer "mo:base/Buffer";
@@ -141,6 +142,34 @@ module {
       var timerId : ?Nat;
     };
 
+    public type EventNotificationRecordShared = {
+      id : Nat;
+      eventId : Nat;
+      publication : Text;
+      destination: Principal;
+      headers : ?ICRC16Map;
+      filter : ?Text;
+      bSent : ?Nat;
+      bConfirmed : ?Nat;
+      stake : Nat;
+      timerId : ?Nat;
+    };
+
+    public func eventNotificationRecordToShared(eventNotificationRecord: EventNotificationRecord) : EventNotificationRecordShared {
+      return {
+        id = eventNotificationRecord.id;
+        eventId = eventNotificationRecord.eventId;
+        publication = eventNotificationRecord.publication;
+        destination = eventNotificationRecord.destination;
+        headers = eventNotificationRecord.headers;
+        filter = eventNotificationRecord.filter;
+        bSent = eventNotificationRecord.bSent;
+        bConfirmed = eventNotificationRecord.bConfirmed;
+        stake = eventNotificationRecord.stake;
+        timerId = eventNotificationRecord.timerId;
+      };
+    };
+
     public type Event = {
       id : Nat;
       prevId : ?Nat;
@@ -158,6 +187,22 @@ module {
       var notifications: [Nat]; //permenant list
     };
 
+    public type EventRecordShared = {
+      event: Event;
+      notificationQueue: [Nat];
+      relayQueue: [Principal];
+      notifications: [Nat];
+    };
+
+    public func eventRecordToShared(eventRecord: EventRecord) : EventRecordShared {
+      return {
+        event = eventRecord.event;
+        notificationQueue = Set.toArray(eventRecord.notificationQueue);
+        relayQueue = Set.toArray(eventRecord.relayQueue);
+        notifications = eventRecord.notifications;
+      };
+    };
+
 
     public type SubscriberActor = actor {
         icrc72_handle_notification([EventNotification]) : async ();
@@ -165,7 +210,6 @@ module {
             #Ok : Value;
             #Err : Text;
         };
-
     };
 
     public type PermissionSet = {
@@ -191,14 +235,66 @@ module {
       namespace: Text;
     };
 
+    public type SubscriberRecordShared = {
+      subscriptionId: Nat;
+      publicationId: Nat;
+      initialConfig: ICRC16Map;
+      subscriber: Principal;
+      filter: ?Text;
+      skip: ?(Nat, Nat);
+      namespace: Text;
+    };
+
+    public func subscriberRecordToShared(subscriberRecord: SubscriberRecord) : SubscriberRecordShared {
+      return {
+        subscriptionId = subscriberRecord.subscriptionId;
+        publicationId = subscriberRecord.publicationId;
+        initialConfig = subscriberRecord.initialConfig;
+        subscriber = subscriberRecord.subscriber;
+        filter = subscriberRecord.filter;
+        skip = subscriberRecord.skip;
+        namespace = subscriberRecord.namespace;
+      };
+    };
+
     public type PublicationRecord = {
         id : Nat; // Unique identifier for the publication
         namespace : Text; // The namespace of the publication
         registeredPublishers : Set.Set<Principal>; // Map of publishers registered and their 
         registeredSubscribers : BTree.BTree<Principal, SubscriberRecord>; // Map of publishers registered and their assigned broadcasters
         registeredRelay : BTree.BTree<Principal, ?Set.Set<Text>>; // Map of relays registered  and filters
-        stakeIndex : BTree.BTree<Nat, Principal>; //amount, subscriber
+        stakeIndex : BTree.BTree<Nat, BTree.BTree<Nat,Principal>>; //amount, subscriber
         subnetIndex: Map.Map<Principal, Principal>; //subnet, broadcaster
+    };
+
+    public type PublicationRecordShared = {
+        id : Nat; // Unique identifier for the publication
+        namespace : Text; // The namespace of the publication
+        registeredPublishers : [Principal]; // Map of publishers registered and their 
+        registeredSubscribers : [(Principal, SubscriberRecordShared)]; // Map of publishers registered and their assigned broadcasters
+        registeredRelay : [(Principal, ?[Text])]; // Map of relays registered  and filters
+        stakeIndex : [(Nat, [(Nat, Principal)])]; //amount, subscriber
+        subnetIndex: [(Principal, Principal)]; //subnet, broadcaster
+    };
+
+    public func publicationRecordToShared(publicationRecord: PublicationRecord) : PublicationRecordShared {
+      return {
+        id = publicationRecord.id;
+        namespace = publicationRecord.namespace;
+        registeredPublishers = Set.toArray(publicationRecord.registeredPublishers);
+        registeredSubscribers = Array.map<(Principal, SubscriberRecord), (Principal, SubscriberRecordShared)>(BTree.toArray(publicationRecord.registeredSubscribers), func(entry){(entry.0, subscriberRecordToShared(entry.1))});
+        registeredRelay = Array.map<(Principal, ?Set.Set<Text>),(Principal,?[Text])>( BTree.toArray(publicationRecord.registeredRelay),func(entry){
+          switch(entry.1){
+            case(?filter) (entry.0, ?(Set.toArray(filter)));
+            case(null) (entry.0, ?[]);
+          };
+        });
+        stakeIndex = Array.map<(Nat, BTree.BTree<Nat,Principal>), (Nat, [(Nat, Principal)])>(BTree.toArray(publicationRecord.stakeIndex), func(entry){
+          let stakeIndex = BTree.toArray(entry.1);
+          return (entry.0, stakeIndex);
+        });
+        subnetIndex = Map.toArray(publicationRecord.subnetIndex);
+      };
     };
 
     public type SubscriptionRecord = {
@@ -208,6 +304,26 @@ module {
       var stake: Nat;
       var skip: ?(Nat, Nat);
       config: ICRC16Map;
+    };
+
+    public type SubscriptionRecordShared = {
+      id: Nat;
+      namespace: Text;
+      filter: ?Text;
+      stake: Nat;
+      skip: ?(Nat, Nat);
+      config: ICRC16Map;
+    };
+
+    public func subscriptionRecordToShared(subscriptionRecord: SubscriptionRecord) : SubscriptionRecordShared {
+      return {
+        id = subscriptionRecord.id;
+        namespace = subscriptionRecord.namespace;
+        filter = subscriptionRecord.filter;
+        stake = subscriptionRecord.stake;
+        skip = subscriptionRecord.skip;
+        config = subscriptionRecord.config;
+      };
     };
 
   ///MARK: Constants
@@ -256,6 +372,25 @@ module {
     name: Text;
   };
 
+  public type Stats ={
+    tt: TT.Stats;
+    icrc72Subscriber: ICRC72Subscriber.Stats;
+    icrc72Publisher: ICRC72Publisher.Stats;
+    roundDelay: ?Nat;
+    maxMessages: ?Nat;
+    icrc72OrchestratorCanister: Principal;
+    publications: [(Nat, PublicationRecordShared)];
+    subscriptions: [(Nat, SubscriptionRecordShared)];
+    eventStore: [(Text, [(Nat, EventRecordShared)])];
+    notificationStore: [(Nat, EventNotificationRecordShared)];
+    messageAccumulator: [(Principal, [(Nat,EventNotification)])];
+    relayAccumulator: [(Principal, [(Nat, Event)])];
+    relayTimer: ?Nat;
+    messageTimer: ?Nat;
+    error: ?Text;
+    nextNotificationId: Nat;
+  };
+
   public type Environment = {
     add_record: ?(([(Text, Value)], ?[(Text,Value)]) -> Nat);
     tt: TT.TimerTool;
@@ -282,12 +417,11 @@ module {
     subscriptionsByNamespace : BTree.BTree<Text, Map.Map<Principal, Nat>>;
     eventStore : BTree.BTree<Text, BTree.BTree<Nat, EventRecord>>; //namespace, event Id
     notificationStore: BTree.BTree<Nat, EventNotificationRecord>;
-    messageAccumulator: BTree.BTree<Principal, Vector.Vector<EventNotification>>;
-    relayAccumulator: BTree.BTree<Principal, Vector.Vector<Event>>;
+    messageAccumulator: BTree.BTree<Principal, BTree.BTree<Nat,EventNotification>>;
+    relayAccumulator: BTree.BTree<Principal, BTree.BTree<Nat,Event>>;
     var relayTimer : ?Nat;
     var messageTimer : ?Nat;
     var error: ?Text;
     var nextNotificationId: Nat;
-    
   };
 };
